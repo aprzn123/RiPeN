@@ -2,7 +2,7 @@
 name = "ripen"
 version = "0.1.0"
 edition = "2021"
-license = "GPLv3"
+license = "GPL-3.0-only"
 description = "A simple TUI RPN calculator"
 homepage = "https://github.com/aprzn123/RiPeN"
 repository = "https://github.com/aprzn123/RiPeN"
