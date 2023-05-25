@@ -1,4 +1,4 @@
-#![feature(split_array, fn_traits)]
+#![feature(split_array)]
 use crossterm::{
     execute, 
     terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -63,7 +63,7 @@ impl Default for Calculator {
                 Operation::new(|s| s == "asin", |&[a]| vec![a.asin()]),
                 Operation::new(|s| s == "acos", |&[a]| vec![a.acos()]),
                 Operation::new(|s| s == "atan", |&[a]| vec![a.atan()]),
-                Operation::new(|s| s == "deg2rad", |&[a]| vec![a * std::f64::consts::PI / 180.0]),
+                Operation::new(|s| s == "d2r", |&[a]| vec![a * std::f64::consts::PI / 180.0]),
                 Operation::new(|s| s == "ln", |&[a]| vec![a.ln()]),
                 Operation::new(|s| s == "swap", |&[a, b]| vec![b, a]),
                 Operation::new(|s| s == "pred", |&[a]| vec![a - 1.]),
