@@ -2,6 +2,11 @@
 name = "ripen"
 version = "0.1.0"
 edition = "2021"
+license = "GPLv3"
+description = "A simple TUI RPN calculator"
+homepage = "https://github.com/aprzn123/RiPeN"
+repository = "https://github.com/aprzn123/RiPeN"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
