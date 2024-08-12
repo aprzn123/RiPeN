@@ -12,4 +12,7 @@ readme = "README.md"
 
 [dependencies]
 crossterm = "0.26.1"
+directories = "5.0.1"
+mlua = { version = "0.9.9", features = ["lua54"] }
 ratatui = "0.20.1"
+uiua = { version = "0.11", default-features = false }
