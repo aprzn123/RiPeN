@@ -7,18 +7,14 @@ use crossterm::{
 };
 use directories::ProjectDirs;
 use mlua::{AsChunk, Lua, Table, Variadic};
-use uiua::Uiua;
+use uiua::{Uiua, UiuaResult};
 
 use std::{
-    collections::HashMap, error::Error, io, mem, sync::mpsc, thread, time::{Duration, Instant}
+    collections::{HashMap, VecDeque}, error::Error, io, mem, sync::mpsc::{self, Sender}, thread, time::{Duration, Instant}
 };
 
 use ratatui::{
-    backend::CrosstermBackend,
-    widgets::{Paragraph, Block, Borders, BorderType},
-    text::{Span, Spans},
-    layout::Rect,
-    Terminal,
+    backend::CrosstermBackend, layout::Rect, text::{Span, Spans}, widgets::{Block, BorderType, Borders, Paragraph, Wrap}, Terminal
 };
 
 struct Calculator {
@@ -28,6 +24,7 @@ struct Calculator {
     operations: HashMap<String, Operation>,
     uiua: Uiua,
     lua: Lua,
+    errors: VecDeque<String>,
 }
 
 enum Event {
@@ -36,7 +33,9 @@ enum Event {
     Tick,
     Quit,
     Reset,
-    ClearTextBox
+    ClearTextBox,
+    PushError(String),
+    PopError,
 }
 
 enum Operation {
@@ -78,19 +77,48 @@ impl Calculator {
             },
             uiua: Uiua::with_safe_sys(),
             lua: Lua::new(),
+            errors: VecDeque::new(),
         }
     }
     // returns false if unsuccessful. mutates stack and returns true if successful.
-    fn operate(&mut self, text: String) -> bool {
+    fn operate(&mut self, text: String, tx: Sender<Event>) -> bool {
         self.operations
-            .get(&text)
+            .get(&text.to_lowercase())
             .map_or(false, |op| match op {
                 Operation::Rust(function) => function(&mut self.stack),
                 Operation::Uiua(function) => {
-                    let required_length = function.signature().args;
-                    if self.stack.len() >= required_length {
-                        todo!();
-                        true
+                    let arg_count = function.signature().args;
+                    if self.stack.len() >= arg_count {
+                        // panic safety: length checked first
+                        let (_, stack_top) = self.stack.split_at(self.stack.len() - arg_count);
+                        for i in stack_top {
+                            self.uiua.push(*i);
+                        }
+                        let result = self.uiua.call(function.clone());
+                        let uiua_stack = self.uiua.take_stack();
+                        match result {
+                            Ok(()) => {
+                                let mut out = Vec::with_capacity(uiua_stack.len());
+                                for i in uiua_stack {
+                                    match i.as_num(&self.uiua, "") {
+                                        Ok(n) => out.push(n),
+                                        Err(e) => {
+                                            // unwrap safety: rx lasts program lifetime
+                                            tx.send(Event::PushError(e.message())).unwrap();
+                                            return false;
+                                        },
+                                    }
+                                }
+                                for _ in 0..arg_count {self.stack.pop();}
+                                self.stack.extend(out);
+                                true
+                            },
+                            Err(e) => {
+                                // unwrap safety: rx lasts program lifetime
+                                tx.send(Event::PushError(e.message())).unwrap();
+                                false
+                            }
+                        }
                     } else {
                         false
                     }
@@ -101,23 +129,32 @@ impl Calculator {
                     if self.stack.len() >= *arg_count {
                         // panic safety: length checked first
                         let (_, stack_top) = self.stack.split_at(self.stack.len() - arg_count);
-                        let out: Variadic<f64> = function.call(Variadic::from_iter(stack_top.iter().map(|n| *n))).unwrap();
-                        for _ in 0..*arg_count {self.stack.pop();}
-                        self.stack.extend(out.iter());
-                        true
+                        let out: mlua::Result<Variadic<f64>> = function.call(Variadic::from_iter(stack_top.iter().copied()));
+                        match out {
+                            Ok(out) => {
+                                for _ in 0..*arg_count {self.stack.pop();}
+                                self.stack.extend(out.iter());
+                                true
+                            },
+                            Err(e) => {
+                                // unwrap safety: rx lasts program lifetime
+                                tx.send(Event::PushError(e.to_string())).unwrap();
+                                false
+                            }
+                        }
                     } else {
                         false
                     }
                 },
             })
     }
-    fn operate_from_input(&mut self) -> bool {
+    fn operate_from_input(&mut self, tx: Sender<Event>) -> bool {
         let text = self.text_box.clone();
-        self.operate(text)
+        self.operate(text, tx)
     }
-    fn operate_previous(&mut self) -> bool {
+    fn operate_previous(&mut self, tx: Sender<Event>) -> bool {
         let text = self.previous.clone();
-        self.operate(text)
+        self.operate(text, tx)
     }
 
     fn reset(&mut self) {
@@ -138,7 +175,15 @@ impl Calculator {
         self.lua.globals().set("register", lua_register_function)?;
         self.lua.load(lua_config).exec()?;
         for (name, arg_count) in name_rx.try_iter() {
-            self.operations.insert(name.clone(), Operation::Lua(name, arg_count));
+            self.operations.insert(name.clone().to_lowercase(), Operation::Lua(name, arg_count));
+        }
+        Ok(())
+    }
+
+    fn load_uiua(&mut self, uiua_config: impl AsRef<std::path::Path>) -> UiuaResult<()> {
+        self.uiua.run_file(uiua_config)?;
+        for (k, f) in self.uiua.bound_functions() {
+            self.operations.insert(k.to_string().to_lowercase(), Operation::Uiua(f));
         }
         Ok(())
     }
@@ -161,13 +206,13 @@ impl Operation {
 }
 
 
-fn submit(c: &mut Calculator) {
+fn submit(c: &mut Calculator, tx: Sender<Event>) {
     if let Ok(num) = c.text_box.parse::<f64>() {
         c.stack.push(num);
         c.previous = mem::take(&mut c.text_box);
     } else if c.text_box.is_empty() {
-        c.operate_previous();
-    } else if c.operate_from_input() {
+        c.operate_previous(tx);
+    } else if c.operate_from_input(tx) {
         c.previous = mem::take(&mut c.text_box);
     }
 }
@@ -179,15 +224,28 @@ fn main() -> Result<(), Box<dyn Error>>{
     let uiua_config = config_dir.map(|p| p.join("functions.ua"));
 
     let mut app = Calculator::new();
+    let (tx, rx) = mpsc::channel();
+
     // load lua
     if let Some(lua_config) = lua_config {
-        if let Err(_) = app.load_lua(lua_config) {
-            eprintln!("Unable to load Lua config");
+        if let Err(e) = app.load_lua(lua_config) {
+            // unwrap safety: rx lasts program lifetime
+            tx.send(Event::PushError(format!("Unable to load Lua config: {e}"))).unwrap();
         }
     } else {
-        eprintln!("Unable to load Lua config");
+        // unwrap safety: rx lasts program lifetime
+        tx.send(Event::PushError("Failed to construct Lua config path".into())).unwrap();
     }
     // TODO: load uiua
+    if let Some(uiua_config) = uiua_config {
+        if let Err(e) = app.load_uiua(uiua_config) {
+            // unwrap safety: rx lasts program lifetime
+            tx.send(Event::PushError(format!("Unable to load Uiua config: {e}"))).unwrap();
+        }
+    } else {
+        // unwrap safety: rx lasts program lifetime
+        tx.send(Event::PushError("Failed to construct Lua config path".into())).unwrap();
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -196,9 +254,10 @@ fn main() -> Result<(), Box<dyn Error>>{
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let (tx, rx) = mpsc::channel();
+    let keyboard_tx = tx.clone();
 
     thread::spawn(move || {
+        let tx = keyboard_tx;
         let mut last_tick = Instant::now();
         let tick_rate = Duration::from_millis(200);
         loop {
@@ -253,6 +312,10 @@ fn main() -> Result<(), Box<dyn Error>>{
                 .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded));
             f.render_widget(stack, stack_size);
             f.render_widget(text_box, box_size);
+            
+            let corner_box = Rect::new(window.width * 2/3, 1, window.width / 3 - 2, stack_size.height - 2);
+            let error = Paragraph::new(app.errors.iter().map(Span::raw).map(Spans::from).collect::<Vec<Spans>>()).wrap(Wrap {trim: true});
+            f.render_widget(error, corner_box);
         })?;
 
         // Handle events
@@ -260,10 +323,20 @@ fn main() -> Result<(), Box<dyn Error>>{
             Event::Quit => break,
             Event::Input(KeyEvent {code: KeyCode::Backspace, ..}) => { app.text_box.pop(); },
             Event::Input(KeyEvent {code: KeyCode::Char(chr), ..}) => { app.text_box.push(chr); }
-            Event::Submit => { submit(&mut app); },
+            Event::Submit => { submit(&mut app, tx.clone()); },
             Event::Reset => { app.reset(); },
             Event::ClearTextBox => { mem::take(&mut app.text_box); },
             Event::Tick | Event::Input(..) => {},
+            Event::PushError(e) => {
+                app.errors.push_back(e);
+                let tx = tx.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_secs(4));
+                    // unwrap safety: rx lasts program lifetime
+                    tx.send(Event::PopError).unwrap();
+                });
+            },
+            Event::PopError => { app.errors.pop_front(); }
         }
     }
 
