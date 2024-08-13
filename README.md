@@ -1,6 +1,6 @@
 # RiPeN
 
-RiPeN is a simple stack-based (RPN) calculator that runs in a TUI. It supports defining custom operations in both Uiua and Lua.
+RiPeN is a simple stack-based (RPN) calculator that runs in a TUI. It supports defining custom operations in both [Uiua](https://uiua.org) 0.11 and [Lua](https://lua.org) 5.4.
 
 ```uiua
 MyOperation ← ⊃+×
