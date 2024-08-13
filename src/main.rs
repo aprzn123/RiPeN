@@ -25,6 +25,7 @@ struct Calculator {
     uiua: Uiua,
     lua: Lua,
     errors: VecDeque<String>,
+    no_lua_loaded: bool,
 }
 
 enum Event {
@@ -57,19 +58,14 @@ impl Calculator {
                 map.insert("*".into(), Operation::new_rust(|&[a, b]| vec![a * b]));
                 map.insert("/".into(), Operation::new_rust(|&[a, b]| vec![a / b]));
                 map.insert("^".into(), Operation::new_rust(|&[a, b]| vec![a.powf(b)]));
-                map.insert("neg".into(), Operation::new_rust(|&[a]| vec![-a]));
-                map.insert("`".into(), Operation::new_rust(|&[a]| vec![-a]));
                 map.insert("sin".into(), Operation::new_rust(|&[a]| vec![a.sin()]));
                 map.insert("cos".into(), Operation::new_rust(|&[a]| vec![a.cos()]));
                 map.insert("tan".into(), Operation::new_rust(|&[a]| vec![a.tan()]));
                 map.insert("asin".into(), Operation::new_rust(|&[a]| vec![a.asin()]));
                 map.insert("acos".into(), Operation::new_rust(|&[a]| vec![a.acos()]));
                 map.insert("atan".into(), Operation::new_rust(|&[a]| vec![a.atan()]));
-                map.insert("d2r".into(), Operation::new_rust(|&[a]| vec![a * std::f64::consts::PI / 180.0]));
                 map.insert("ln".into(), Operation::new_rust(|&[a]| vec![a.ln()]));
                 map.insert("swap".into(), Operation::new_rust(|&[a, b]| vec![b, a]));
-                map.insert("pred".into(), Operation::new_rust(|&[a]| vec![a - 1.]));
-                map.insert("succ".into(), Operation::new_rust(|&[a]| vec![a + 1.]));
                 map.insert("sqrt".into(), Operation::new_rust(|&[a]| vec![a.sqrt()]));
                 map.insert("cbrt".into(), Operation::new_rust(|&[a]| vec![a.cbrt()]));
                 map.insert("pi".into(), Operation::new_rust(|&[]| vec![std::f64::consts::PI]));
@@ -78,6 +74,7 @@ impl Calculator {
             uiua: Uiua::with_safe_sys(),
             lua: Lua::new(),
             errors: VecDeque::new(),
+            no_lua_loaded: true,
         }
     }
     // returns false if unsuccessful. mutates stack and returns true if successful.
@@ -165,7 +162,11 @@ impl Calculator {
 
     fn load_lua<'a>(&'a mut self, lua_config: impl AsChunk<'a, 'static>) -> Result<(), mlua::Error> {
         let (name_tx, name_rx) = mpsc::channel();
-        self.lua.globals().set("_ripen_registry", self.lua.create_table()?)?;
+        if self.no_lua_loaded {
+            self.lua.globals().set("_ripen_registry", self.lua.create_table()?)?;
+        }
+        self.no_lua_loaded = false;
+
         let lua_register_function = self.lua.create_function(move |lua, (name, arg_count, func): (String, usize, mlua::Function)| {
             lua.globals().get::<_, Table>("_ripen_registry")?.set(name.clone(), func)?;
             // unwrap safety: rx guaranteed not to have hung up
@@ -227,6 +228,9 @@ fn main() -> Result<(), Box<dyn Error>>{
     let (tx, rx) = mpsc::channel();
 
     // load lua
+    if let Err(e) = app.load_lua(include_str!("base.lua")) {
+        panic!("Error in the base lua config file! {e}");
+    }
     if let Some(lua_config) = lua_config {
         if let Err(e) = app.load_lua(lua_config) {
             // unwrap safety: rx lasts program lifetime
