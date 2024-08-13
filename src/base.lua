@@ -13,3 +13,6 @@ end)
 register("root", 2, function(x, y)
   return x^(1/y)
 end)
+
+register("min", 2, math.min)
+register("max", 2, math.max)
